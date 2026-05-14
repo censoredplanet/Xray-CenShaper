@@ -1,8 +1,14 @@
 package internet
 
 import (
+	"context"
+	"encoding/json"
+	stderrors "errors"
+	"fmt"
+
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/transport/internet/finalmask"
+	"github.com/xtls/xray-core/transport/internet/censhaper"
 )
 
 // MemoryStreamConfig is a parsed form of StreamConfig. It is used to reduce the number of Protobuf parses.
@@ -14,9 +20,42 @@ type MemoryStreamConfig struct {
 	SecuritySettings interface{}
 	TcpmaskManager   *finalmask.TcpmaskManager
 	UdpmaskManager   *finalmask.UdpmaskManager
+	censhaperManager  *censhaper.Manager
 	QuicParams       *QuicParams
 	SocketSettings   *SocketConfig
 	DownloadSettings *MemoryStreamConfig
+}
+
+// [NEW] Close now walks nested DownloadSettings as well as the top-level
+// censhaper manager. Split HTTP and similar transports can allocate secondary
+// MemoryStreamConfig trees, so only closing the top-level config leaked the
+// compiled WASM runtimes hanging off child configs.
+//
+// [NEW] We also nil the fields before closing them so repeated Close calls are
+// harmless. Xray has more than one ownership path for stream settings, and
+// making teardown idempotent is safer than assuming a single caller.
+func (m *MemoryStreamConfig) Close() error {
+	if m == nil {
+		return nil
+	}
+
+	child := m.DownloadSettings
+	m.DownloadSettings = nil
+	manager := m.censhaperManager
+	m.censhaperManager = nil
+
+	var errs []error
+	if child != nil {
+		if err := child.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("download settings close: %w", err))
+		}
+	}
+	if manager != nil {
+		if err := manager.Close(context.Background()); err != nil {
+			errs = append(errs, fmt.Errorf("censhaper manager close: %w", err))
+		}
+	}
+	return stderrors.Join(errs...)
 }
 
 // ToMemoryStreamConfig converts a StreamConfig to MemoryStreamConfig. It returns a default non-nil MemoryStreamConfig for nil input.
@@ -77,6 +116,18 @@ func ToMemoryStreamConfig(s *StreamConfig) (*MemoryStreamConfig, error) {
 			masks = append(masks, instance.(finalmask.Udpmask))
 		}
 		mss.UdpmaskManager = finalmask.NewUdpmaskManager(masks)
+	}
+
+	if s != nil && len(s.censhaperSettingsJSON) > 0 {
+		var cfg censhaper.Config
+		if err := json.Unmarshal(s.censhaperSettingsJSON, &cfg); err != nil {
+			return nil, err
+		}
+		mgr, err := censhaper.NewManager(context.Background(), &cfg)
+		if err != nil {
+			return nil, err
+		}
+		mss.censhaperManager = mgr
 	}
 
 	return mss, nil

@@ -23,18 +23,18 @@ func ToTypedMessage(message proto.Message) *TypedMessage {
 		Type:  GetMessageType(message),
 		Value: settings,
 	}
-	// Preserve non-proto CenShaper sidecars across TypedMessage round-trips.
-	// StreamConfig currently carries CenShaperSettingsJSON outside the generated
+	// Preserve non-proto censhaper sidecars across TypedMessage round-trips.
+	// StreamConfig currently carries censhaperSettingsJSON outside the generated
 	// proto schema, but Xray still serializes many containing configs through
 	// ToTypedMessage/GetInstance during startup. Without this registry the field
-	// vanishes and CenShaper silently disables itself at runtime.
+	// vanishes and censhaper silently disables itself at runtime.
 	// The registry is keyed by the TypedMessage instance itself rather than
 	// by marshaled protobuf bytes. Two StreamConfig values can be proto-identical
-	// yet carry different CenShaper sidecars, and a byte-based key would make the
+	// yet carry different censhaper sidecars, and a byte-based key would make the
 	// later one overwrite the earlier one.
 	// Only store when at least one sidecar carries actual data.
 	// collectTypedMessageSidecars appends nil placeholders for every
-	// CenShaperSettingsJSON field it encounters, even when the field is empty.
+	// censhaperSettingsJSON field it encounters, even when the field is empty.
 	// Without this guard, ToTypedMessage would insert a map entry for every
 	// StreamConfig-bearing message, causing the sync.Map to grow with dead
 	// entries on each config reload (map keys are pointer-valued and never
@@ -93,7 +93,7 @@ func collectTypedMessageSidecars(v reflect.Value, sidecars [][]byte) [][]byte {
 		}
 		return collectTypedMessageSidecars(v.Elem(), sidecars)
 	case reflect.Struct:
-		field := v.FieldByName("CenShaperSettingsJSON")
+		field := v.FieldByName("censhaperSettingsJSON")
 		if field.IsValid() && field.Type() == typedMessageSidecarBytesType {
 			if field.Len() > 0 {
 				sidecars = append(sidecars, append([]byte(nil), field.Bytes()...))
@@ -130,7 +130,7 @@ func restoreTypedMessageSidecars(v reflect.Value, sidecars [][]byte, index *int)
 		}
 		restoreTypedMessageSidecars(v.Elem(), sidecars, index)
 	case reflect.Struct:
-		field := v.FieldByName("CenShaperSettingsJSON")
+		field := v.FieldByName("censhaperSettingsJSON")
 		if field.IsValid() && field.Type() == typedMessageSidecarBytesType && field.CanSet() {
 			if *index < len(sidecars) && sidecars[*index] != nil {
 				field.SetBytes(append([]byte(nil), sidecars[*index]...))

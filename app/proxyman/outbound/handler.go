@@ -388,7 +388,7 @@ func (h *Handler) Close() error {
 		errs = append(errs, err)
 	}
 	// Outbound handlers own the MemoryStreamConfig they built at startup.
-	// Return teardown failures here so CenShaper runtime cleanup problems do not
+	// Return teardown failures here so censhaper runtime cleanup problems do not
 	// disappear behind a nil Close result.
 	if h.streamSettings != nil {
 		if err := h.streamSettings.Close(); err != nil {

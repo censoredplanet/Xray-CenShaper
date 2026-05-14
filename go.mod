@@ -3,6 +3,7 @@ module github.com/xtls/xray-core
 go 1.26
 
 require (
+	censhaper/host v0.0.0-00010101000000-000000000000
 	github.com/apernet/quic-go v0.59.1-0.20260330051153-c402ee641eb6
 	github.com/cloudflare/circl v1.6.3
 	github.com/ghodss/yaml v1.0.1-0.20220118164431-d8423dcdf344
@@ -35,6 +36,7 @@ require (
 )
 
 require (
+	github.com/tetratelabs/wazero v0.0.0-00010101000000-000000000000 // indirect
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/google/btree v1.1.2 // indirect
@@ -52,3 +54,7 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace censhaper/host => ../../censhaper/host
+
+replace github.com/tetratelabs/wazero => github.com/refraction-networking/wazero v1.7.3-w

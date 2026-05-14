@@ -1725,6 +1725,117 @@ type FinalMask struct {
 	QuicParams *QuicParamsConfig `json:"quicParams"`
 }
 
+// censhaperSlot is kept only so legacy configs can be rejected cleanly. The
+// current bootstrap-only flow must not set top-level fixed slots.
+type censhaperSlot struct {
+	Size     uint32 `json:"size"`
+	Dir      string `json:"dir"`
+	OffsetMs uint64 `json:"offset_ms"`
+}
+
+// censhaperConfig is the JSON-level configuration for the host-resident
+// bootstrap traffic shaper. It lives in streamSettings.censhaperSettings.
+//
+// The only supported mode is TLS-derived bootstrap:
+//   - slot 0 starts with a fixed encrypted bootstrap marker and may carry
+//     proxy payload after it
+//   - slots 1..9 come from the generator-backed disable-timing flow source
+//   - both peers derive the same row-selection seed from negotiated outer TLS
+//     exporter keying material
+//
+// censhaperGeneratedFlowConfig describes the external generator-backed
+// disable-timing source. Both peers start from the same TLS-derived seed,
+// generate the same 5 candidate 10-packet flows, pick the first locally valid
+// flow, and increment the seed deterministically until one passes validation.
+type censhaperGeneratedFlowConfig struct {
+	GeneratorPath      string `json:"generatorPath,omitempty"`
+	TrafficProfilePath string `json:"trafficProfilePath,omitempty"`
+	ModelPath          string `json:"modelPath,omitempty"`
+	NumFlows           uint32 `json:"numFlows,omitempty"`
+	FlowLength         uint32 `json:"flowLength,omitempty"`
+}
+
+type censhaperConfig struct {
+	// Mode is kept only for explicitness and legacy rejection. Omit it or
+	// set it to "bootstrap".
+	Mode          string         `json:"mode"`
+	Slots         []censhaperSlot `json:"slots,omitempty"`
+	Seed          *uint64        `json:"seed,omitempty"`
+	DisableTiming bool           `json:"disableTiming,omitempty"`
+	// GeneratedFlow is allowed only for bootstrap+disableTiming. It lets
+	// the host derive per-connection no-timing packet sizes from the external
+	// generator.
+	GeneratedFlow *censhaperGeneratedFlowConfig `json:"generatedFlow,omitempty"`
+}
+
+const (
+	// Generator-backed disable-timing bootstrap still produces one full
+	// 10-slot bootstrap row per attempt, matching the runtime bootstrap slot
+	// count exactly.
+	censhaperBootstrapSlotCount = 10
+)
+
+// Validate fails fast in Xray's config layer before we ever instantiate
+// the host bootstrap shaper. This avoids a class of late, connection-time
+// failures and also blocks configurations that Xray would otherwise silently
+// ignore, such as non-TCP transports where no censhaper wrap hook exists today.
+func (c *censhaperConfig) Validate(network, security string) error {
+	if c == nil {
+		return nil
+	}
+	if strings.ToLower(network) != "tcp" {
+		return errors.New(`censhaper currently supports only "tcp" transport`)
+	}
+	switch strings.ToLower(security) {
+	case "tls":
+	default:
+		// The product requirement here is five on-wire record units before
+		// proxy bytes begin. That concept is well-defined only for record-oriented
+		// transports in the current integration. We are explicitly scoping support
+		// to TLS/uTLS here and rejecting other security layers rather than
+		// pretending the same guarantee still holds.
+		return errors.New(`censhaper currently requires "tls" security`)
+	}
+	// Bootstrap is now the only supported public mode.
+	switch strings.ToLower(c.Mode) {
+	case "", "bootstrap":
+	default:
+		return errors.New(`censhaper "mode" must be "bootstrap"`)
+	}
+	if len(c.Slots) > 0 {
+		return errors.New(`censhaper bootstrap mode must not set top-level "slots"; use "generatedFlow"`)
+	}
+	// Bootstrap no longer accepts an explicit seed because both sides
+	// derive the selector from negotiated TLS session secrets.
+	if c.Seed != nil {
+		return errors.New(`censhaper bootstrap mode must not set "seed"; the row selector is derived from negotiated TLS session secrets`)
+	}
+	// Bootstrap now has exactly one maintained source:
+	// generator-backed disable-timing flow synthesis.
+	if c.GeneratedFlow == nil {
+		return errors.New(`censhaper bootstrap mode requires "generatedFlow"`)
+	}
+	if !c.DisableTiming {
+		return errors.New(`censhaper bootstrap mode requires "disableTiming": true when "generatedFlow" is set`)
+	}
+	if c.GeneratedFlow.GeneratorPath == "" {
+		return errors.New(`censhaper generatedFlow requires "generatorPath"`)
+	}
+	if c.GeneratedFlow.TrafficProfilePath == "" {
+		return errors.New(`censhaper generatedFlow requires "trafficProfilePath"`)
+	}
+	if c.GeneratedFlow.ModelPath == "" {
+		return errors.New(`censhaper generatedFlow requires "modelPath"`)
+	}
+	if c.GeneratedFlow.NumFlows != 5 {
+		return errors.New(`censhaper generatedFlow "numFlows" must be 5`)
+	}
+	if c.GeneratedFlow.FlowLength != censhaperBootstrapSlotCount {
+		return errors.New(`censhaper generatedFlow "flowLength" must be 10`)
+	}
+	return nil
+}
+
 type StreamConfig struct {
 	Address             *Address           `json:"address"`
 	Port                uint16             `json:"port"`
@@ -1742,6 +1853,7 @@ type StreamConfig struct {
 	WSSettings          *WebSocketConfig   `json:"wsSettings"`
 	HTTPUPGRADESettings *HttpUpgradeConfig `json:"httpupgradeSettings"`
 	HysteriaSettings    *HysteriaConfig    `json:"hysteriaSettings"`
+	censhaperSettings   *censhaperConfig   `json:"censhaperSettings"`
 	SocketSettings      *SocketConfig      `json:"sockopt"`
 }
 
@@ -1995,6 +2107,20 @@ func (c *StreamConfig) Build() (*internet.StreamConfig, error) {
 				MaxIncomingStreams:      c.FinalMask.QuicParams.MaxIncomingStreams,
 			}
 		}
+	}
+
+	if c.censhaperSettings != nil {
+		// Validate in Go before serializing the sideband config. This keeps
+		// bad schedules and unsupported transport/security combinations from
+		// reaching runtime, where failures are much harder to diagnose.
+		if err := c.censhaperSettings.Validate(config.ProtocolName, c.Security); err != nil {
+			return nil, errors.New("invalid censhaper settings").Base(err)
+		}
+		obfJSON, err := json.Marshal(c.censhaperSettings)
+		if err != nil {
+			return nil, errors.New("failed to marshal censhaper settings").Base(err)
+		}
+		config.censhaperSettingsJSON = obfJSON
 	}
 
 	return config, nil
