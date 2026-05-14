@@ -55,6 +55,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace censhaper/host => ../../censhaper/host
+replace censhaper/host => ./censhaper/host
 
 replace github.com/tetratelabs/wazero => github.com/refraction-networking/wazero v1.7.3-w

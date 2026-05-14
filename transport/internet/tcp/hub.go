@@ -3,6 +3,7 @@ package tcp
 import (
 	"context"
 	gotls "crypto/tls"
+	goerrors "errors"
 	"strings"
 	"time"
 
@@ -24,6 +25,13 @@ type Listener struct {
 	authConfig    internet.ConnectionAuthenticator
 	config        *Config
 	addConn       internet.ConnHandler
+	// [NEW] The listener owns the censhaper manager lifecycle for inbound TCP.
+	// Keeping Close on the interface lets shutdown return teardown failures
+	// instead of silently discarding them.
+	censhaperManager interface {
+		WrapServer(ctx context.Context, conn net.Conn) (net.Conn, error)
+		Close(ctx context.Context) error
+	}
 }
 
 // ListenTCP creates a new Listener based on configurations.
@@ -76,9 +84,19 @@ func ListenTCP(ctx context.Context, address net.Address, port net.Port, streamSe
 
 	if config := tls.ConfigFromStreamSettings(streamSettings); config != nil {
 		l.tlsConfig = config.GetTLSConfig()
+		if streamSettings.censhaperManager != nil {
+			l.tlsConfig.DynamicRecordSizingDisabled = true
+		}
 	}
 	if config := reality.ConfigFromStreamSettings(streamSettings); config != nil {
-		l.realityConfig = config.GetREALITYConfig()
+		// [NEW] REALITY server config is built outside the stdlib TLS helpers, so
+		// censhaper has to disable dynamic record sizing on the REALITY config
+		// directly to preserve one shaped slot per encrypted record.
+		if streamSettings.censhaperManager != nil {
+			l.realityConfig = config.GetREALITYConfigForcenshaper()
+		} else {
+			l.realityConfig = config.GetREALITYConfig()
+		}
 		go goreality.DetectPostHandshakeRecordsLens(l.realityConfig)
 	}
 
@@ -92,6 +110,10 @@ func ListenTCP(ctx context.Context, address net.Address, port net.Port, streamSe
 			return nil, errors.New("invalid header settings.").Base(err).AtError()
 		}
 		l.authConfig = auth
+	}
+
+	if streamSettings.censhaperManager != nil {
+		l.censhaperManager = streamSettings.censhaperManager
 	}
 
 	go l.keepAccepting()
@@ -122,6 +144,14 @@ func (v *Listener) keepAccepting() {
 					return
 				}
 			}
+			// censhaper wraps AFTER TLS so each scheduled Write produces one TLS record.
+			if v.censhaperManager != nil {
+				conn, err = v.censhaperManager.WrapServer(context.Background(), conn)
+				if err != nil {
+					errors.LogWarningInner(context.Background(), err, "censhaper server wrap failed")
+					return
+				}
+			}
 			if v.authConfig != nil {
 				conn = v.authConfig.Server(conn)
 			}
@@ -137,7 +167,18 @@ func (v *Listener) Addr() net.Addr {
 
 // Close implements internet.Listener.Close.
 func (v *Listener) Close() error {
-	return v.listener.Close()
+	var errs []error
+	if err := v.listener.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	// [NEW] Surface censhaper teardown failures instead of dropping them. That
+	// makes leaked WASM runtime shutdown visible in logs and tests.
+	if v.censhaperManager != nil {
+		if err := v.censhaperManager.Close(context.Background()); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return goerrors.Join(errs...)
 }
 
 func init() {

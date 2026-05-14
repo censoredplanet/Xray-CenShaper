@@ -43,6 +43,12 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 			tlsConfig = config.GetTLSConfig(tls.WithDestination(dest))
 		}
 
+		// censhaper requires one TLS record per Write. Go's dynamic record
+		// sizing starts at ~1KB and grows, which fragments large writes.
+		if streamSettings.censhaperManager != nil {
+			tlsConfig.DynamicRecordSizingDisabled = true
+		}
+
 		isFromMitmVerify := false
 		if r, ok := tlsConfig.Rand.(*tls.RandCarrier); ok && len(r.VerifyPeerCertByName) > 0 {
 			for i, name := range r.VerifyPeerCertByName {
@@ -96,8 +102,23 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 			return nil, errors.New("MITM freedom RAW TLS: unexpected Negotiated Protocol (" + negotiatedProtocol + ") with " + mitmServerName).AtWarning()
 		}
 	} else if config := reality.ConfigFromStreamSettings(streamSettings); config != nil {
-		if conn, err = reality.UClient(conn, config, ctx, dest); err != nil {
+		// [NEW] REALITY owns its own TLS 1.3/uTLS config, so censhaper must select
+		// the explicit REALITY-aware path that disables dynamic record sizing.
+		if streamSettings.censhaperManager != nil {
+			conn, err = reality.UClientForcenshaper(conn, config, ctx, dest)
+		} else {
+			conn, err = reality.UClient(conn, config, ctx, dest)
+		}
+		if err != nil {
 			return nil, err
+		}
+	}
+
+	// censhaper wraps AFTER TLS so each scheduled Write produces exactly one TLS record.
+	if streamSettings.censhaperManager != nil {
+		conn, err = streamSettings.censhaperManager.WrapClient(ctx, conn)
+		if err != nil {
+			return nil, errors.New("censhaper client wrap failed").Base(err)
 		}
 	}
 
