@@ -510,6 +510,16 @@ func WithNextProto(protocol ...string) Option {
 	}
 }
 
+// WithDynamicRecordSizingDisabled disables Go's TLS dynamic record sizing.
+// Required when obfproxy is active: dynamic sizing starts with ~1KB records
+// and grows, splitting large writes into multiple TLS records. This breaks
+// the one-Write-one-record invariant that traffic shaping depends on.
+func WithDynamicRecordSizingDisabled() Option {
+	return func(config *tls.Config) {
+		config.DynamicRecordSizingDisabled = true
+	}
+}
+
 // ConfigFromStreamSettings fetches Config from stream settings. Nil if not found.
 func ConfigFromStreamSettings(settings *internet.MemoryStreamConfig) *Config {
 	if settings == nil {

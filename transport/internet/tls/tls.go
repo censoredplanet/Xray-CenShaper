@@ -128,21 +128,51 @@ func (c *UConn) NegotiatedProtocol() string {
 	return state.NegotiatedProtocol
 }
 
+// [NEW] normalizeUTLSRenegotiation freezes the uTLS preset's internal
+// renegotiation mode to the caller's desired policy after the preset handshake
+// state has been built. This does not change the initial renegotiation_info
+// extension bytes, but it prevents the live connection from advertising
+// renegotiation as enabled internally, which is required for TLS exporters.
+func normalizeUTLSRenegotiation(utlsConn *utls.UConn, renegotiation utls.RenegotiationSupport) {
+	if err := utlsConn.BuildHandshakeState(); err != nil {
+		return
+	}
+	for _, extension := range utlsConn.Extensions {
+		if reneg, ok := extension.(*utls.RenegotiationInfoExtension); ok {
+			reneg.Renegotiation = renegotiation
+		}
+	}
+	(*utils.AccessField[*utls.Config](utlsConn, "config")).Renegotiation = renegotiation
+}
+
 func UClient(c net.Conn, config *tls.Config, fingerprint *utls.ClientHelloID) net.Conn {
 	utlsConn := utls.UClient(c, copyConfig(config), *fingerprint)
+	if config.Renegotiation == tls.RenegotiateNever {
+		normalizeUTLSRenegotiation(utlsConn, utls.RenegotiateNever)
+	}
 	return &UConn{UConn: utlsConn}
 }
 
 func GeneraticUClient(c net.Conn, config *tls.Config) *utls.UConn {
-	return utls.UClient(c, copyConfig(config), utls.HelloChrome_Auto)
+	utlsConn := utls.UClient(c, copyConfig(config), utls.HelloChrome_Auto)
+	if config.Renegotiation == tls.RenegotiateNever {
+		normalizeUTLSRenegotiation(utlsConn, utls.RenegotiateNever)
+	}
+	return utlsConn
 }
 
 func copyConfig(c *tls.Config) *utls.Config {
 	config := &utls.Config{
-		Rand:                           c.Rand,
-		RootCAs:                        c.RootCAs,
-		ServerName:                     c.ServerName,
-		InsecureSkipVerify:             c.InsecureSkipVerify,
+		Rand:               c.Rand,
+		RootCAs:            c.RootCAs,
+		ServerName:         c.ServerName,
+		InsecureSkipVerify: c.InsecureSkipVerify,
+		// [NEW] obfproxy disables Go's dynamic record sizing so one scheduled
+		// Write maps to one TLS record. The uTLS client path uses a copied config,
+		// so we must propagate the flag here too or fingerprinted clients split
+		// large dummy slots into multiple records.
+		DynamicRecordSizingDisabled:    c.DynamicRecordSizingDisabled,
+		Renegotiation:                  utls.RenegotiationSupport(c.Renegotiation),
 		VerifyPeerCertificate:          c.VerifyPeerCertificate,
 		KeyLogWriter:                   c.KeyLogWriter,
 		EncryptedClientHelloConfigList: c.EncryptedClientHelloConfigList,
