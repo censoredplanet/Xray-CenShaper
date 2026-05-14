@@ -128,7 +128,7 @@ func (c *UConn) NegotiatedProtocol() string {
 	return state.NegotiatedProtocol
 }
 
-// [NEW] normalizeUTLSRenegotiation freezes the uTLS preset's internal
+// normalizeUTLSRenegotiation freezes the uTLS preset's internal
 // renegotiation mode to the caller's desired policy after the preset handshake
 // state has been built. This does not change the initial renegotiation_info
 // extension bytes, but it prevents the live connection from advertising
@@ -167,7 +167,7 @@ func copyConfig(c *tls.Config) *utls.Config {
 		RootCAs:            c.RootCAs,
 		ServerName:         c.ServerName,
 		InsecureSkipVerify: c.InsecureSkipVerify,
-		// [NEW] obfproxy disables Go's dynamic record sizing so one scheduled
+		// censhaper disables Go's dynamic record sizing so one scheduled
 		// Write maps to one TLS record. The uTLS client path uses a copied config,
 		// so we must propagate the flag here too or fingerprinted clients split
 		// large dummy slots into multiple records.
