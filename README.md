@@ -128,6 +128,3 @@ go build -o xray.exe -trimpath -buildvcs=false -ldflags="-s -w -buildid=" -v ./m
 CGO_ENABLED=0 go build -o xray -trimpath -buildvcs=false -gcflags="all=-l=4" \
   -ldflags="-X github.com/xtls/xray-core/core.build=REPLACE -s -w -buildid=" -v ./main
 ```
-## Based On
-
-This project is forked from [XTLS/Xray-core](https://github.com/XTLS/Xray-core) and integrates the censhaper traffic shaping system.
