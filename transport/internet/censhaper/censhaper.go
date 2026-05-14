@@ -1,7 +1,7 @@
-// Package censhaper integrates the host-resident bootstrap filter into
+// Package censhaper integrates the bootstrap filter into
 // Xray-core's transport layer. It wraps connections AFTER TLS so that each
 // configured slot size targets the final encrypted TLS record size on the
-// wire. The host learns the negotiated TLS overhead after handshake and
+// wire. Censhaper learns the negotiated TLS overhead after handshake and
 // subtracts it before executing the derived schedule directly.
 //
 // Usage in Xray JSON config:
@@ -29,7 +29,7 @@ import (
 	"net"
 	"sync"
 
-	host "censhaper/host"
+	censhaper "censhaper"
 )
 
 // Config is the JSON-level configuration for censhaper in Xray stream
@@ -41,7 +41,7 @@ import (
 //     exporter keying material
 //
 // [NEW] GeneratedFlowConfig carries the external generator inputs for the
-// bootstrap+disableTiming path. The host still derives the per-connection seed
+// bootstrap+disableTiming path. Censhaper still derives the per-connection seed
 // from outer TLS exporter material; these settings only tell it how to ask the
 // generator for candidate no-timing flows.
 type GeneratedFlowConfig struct {
@@ -54,7 +54,7 @@ type GeneratedFlowConfig struct {
 
 type Config struct {
 	Mode  string      `json:"mode"`
-	Slots []host.Slot `json:"slots,omitempty"`
+	Slots []censhaper.Slot `json:"slots,omitempty"`
 	// [NEW] Seed is kept only so older sideband JSON can be rejected with a
 	// clear error. Bootstrap no longer accepts user-supplied seeds because the
 	// row selector now comes from negotiated outer TLS session secrets.
@@ -70,8 +70,8 @@ type Config struct {
 // Thread-safe.
 type Manager struct {
 	mu           sync.Mutex
-	clientFilter *host.Filter
-	serverFilter *host.Filter
+	clientFilter *censhaper.Filter
+	serverFilter *censhaper.Filter
 }
 
 // NewManager creates a Manager from config. Runtime config errors surface at
@@ -93,12 +93,12 @@ func NewManager(ctx context.Context, cfg *Config) (*Manager, error) {
 		return nil, fmt.Errorf("censhaper: bootstrap mode no longer accepts \"seed\"; the row selector is derived from negotiated TLS session secrets")
 	}
 
-	// [NEW] Keep the host-facing generator settings in one value so both client
+	// [NEW] Keep the censhaper-facing generator settings in one value so both client
 	// and server filters run the same deterministic retry loop once they derive
 	// the shared TLS seed for a connection.
-	var generatedFlow *host.GeneratedFlowConfig
+	var generatedFlow *censhaper.GeneratedFlowConfig
 	if cfg.GeneratedFlow != nil {
-		generatedFlow = &host.GeneratedFlowConfig{
+		generatedFlow = &censhaper.GeneratedFlowConfig{
 			GeneratorPath:      cfg.GeneratedFlow.GeneratorPath,
 			TrafficProfilePath: cfg.GeneratedFlow.TrafficProfilePath,
 			ModelPath:          cfg.GeneratedFlow.ModelPath,
@@ -107,19 +107,19 @@ func NewManager(ctx context.Context, cfg *Config) (*Manager, error) {
 		}
 	}
 
-	clientCfg := host.Config{
+	clientCfg := censhaper.Config{
 		Role:          "client",
 		Mode:          mode,
 		DisableTiming: cfg.DisableTiming,
-		// [NEW] The host consumes GeneratedFlow only in bootstrap+disableTiming.
+		// Censhaper consumes GeneratedFlow only in bootstrap+disableTiming.
 		GeneratedFlow: generatedFlow,
 	}
-	clientFilter, err := host.NewFilter(ctx, clientCfg)
+	clientFilter, err := censhaper.NewFilter(ctx, clientCfg)
 	if err != nil {
 		return nil, fmt.Errorf("censhaper: create client filter: %w", err)
 	}
 
-	serverCfg := host.Config{
+	serverCfg := censhaper.Config{
 		Role:          "server",
 		Mode:          mode,
 		DisableTiming: cfg.DisableTiming,
@@ -127,7 +127,7 @@ func NewManager(ctx context.Context, cfg *Config) (*Manager, error) {
 		// sides make identical per-connection candidate and retry decisions.
 		GeneratedFlow: generatedFlow,
 	}
-	serverFilter, err := host.NewFilter(ctx, serverCfg)
+	serverFilter, err := censhaper.NewFilter(ctx, serverCfg)
 	if err != nil {
 		clientFilter.Close(ctx)
 		return nil, fmt.Errorf("censhaper: create server filter: %w", err)
